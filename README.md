@@ -35,6 +35,7 @@ pip install -r requirements.txt
 
 ```bash
 python monte_carlo.py
+python model_consistency.py
 pytest -q
 ```
 
@@ -60,7 +61,7 @@ Array shape       = (127, 10000)
   Black-Scholes says  $0.068358   <-- falls inside the CI
 ```
 
-and `20 passed` from pytest.
+and `44 passed` from pytest — 20 for the simulation engine, 24 for the cross-model consistency check described below.
 
 Your exact figures will match only if you use `rng.standard_normal` with the same seed and draw one `num_sims`-length vector per step, in that order. If they differ slightly but the Black-Scholes price still lands inside your confidence interval, your engine is correct — you just consumed random numbers in a different order.
 
@@ -97,6 +98,51 @@ Five regimes, each adjusting drift and volatility:
 | Calm market | 0 | 0.6× | Quiet, range-bound conditions |
 
 The frost scenario is the one worth talking through: it is not just a higher mean, it is a **fatter right tail**. That asymmetry is precisely why coffee options trade with a skew, and it connects this project back to the Black-Scholes one — where a flat 25% vol across all strikes is exactly the assumption this simulation shows to be wrong.
+
+## Cross-model consistency check
+
+`model_consistency.py` ties this repository to the other two coffee projects and shows they are one model seen from three angles.
+
+```bash
+python model_consistency.py
+```
+
+The chain: cost of carry turns spot into a futures price, Black-76 prices an option on that futures contract, and Monte Carlo prices the same contract by simulation.
+
+| Route | Price | vs Black-76 |
+|---|---|---|
+| Black-76 on `F` | 0.07119333 | reference |
+| Generalised Black-Scholes on `S`, carry `b` | 0.07119333 | −1.25e−16 |
+| Monte Carlo on `F`, drift 0 | 0.07132577 | 1.32e−04 |
+| Monte Carlo on `S`, drift `b` | 0.07132577 | 1.32e−04 |
+
+Two of these three relationships are **exact algebraic identities**, not approximations:
+
+- **Black-76 on `F` ≡ generalised Black-Scholes on `S` with carry `b`.** Substitute `F = S·e^(bT)` into Black-76 and the expressions collapse into one another. Agreement is at 1e−16 — floating-point dust.
+- **Setting `d = y = 0` gives `b = r`**, and the generalised form reduces to plain Black-Scholes. That path reproduces `$0.068358`, which is exactly what the `coffee-black-scholes` repository prints. The two projects meet at a number.
+- **Monte Carlo agrees within its standard error**, which is statistical rather than exact and is asserted at three standard errors.
+
+### Why this matters
+
+A futures price already contains the carry. Feeding one into *spot* Black-Scholes charges for it twice:
+
+```
+Correct   (Black-76 on F)              $0.071193
+Wrong     (spot Black-Scholes on F)    $0.077112
+Overpriced by                          $0.005918  (8.31%)
+```
+
+On a single ICE contract that is **$221.94** of error, in one direction, every time. Black-76 exists to prevent it.
+
+### The two simulation routes
+
+Under the risk-neutral measure a futures price is a **martingale** — zero drift, because entering a futures contract costs nothing. So simulating the futures at drift 0 from `F`, and simulating the spot at drift `b` from `S`, produce the same terminal distribution. Not similar — identical, path by path, given the same draws. `terminal_distributions_match()` measures the gap and gets ~1e−15.
+
+That is a more direct way to see why futures are driftless than any amount of prose about measure changes.
+
+### No new dependencies
+
+The normal CDF is implemented with `math.erf` rather than `scipy.stats.norm`. SciPy is a ~30 MB dependency and this module needs exactly one function from it, so `requirements.txt` is unchanged.
 
 ## Notes and limitations
 
